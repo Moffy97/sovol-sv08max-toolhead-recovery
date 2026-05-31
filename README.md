@@ -85,8 +85,19 @@ Katapult+Klipper → restores the UART console. Afterwards, align the host firmw
   (e.g. the `ldc1612_setup_home` command with/without `homing_method` between the `main`
   and `eddy_contact` branches). A mismatch → "Command format mismatch".
 - Once **Katapult** is reinstalled, future flashes are done conveniently over CAN
-  (`flash_can.py`), no more SWD needed.
+  (`flash_can.py`), no more SWD needed. **Gotcha:** on Sovol's setup the **Katapult CAN UUID
+  differs from the Klipper-app UUID** for the same chip. To flash over CAN: send the bootloader
+  request with the Klipper UUID (it "fails" but triggers the reboot), then `flash_can.py -q` to
+  read the **Katapult** UUID, then flash using that Katapult UUID.
+- Always flash with **`verify`** (`program <bin> <addr> verify`): GPIO bit-bang SWD is marginal
+  and a write can glitch silently — verification catches it.
 - The exact same procedure works for the **filament-buffer board** (UUID `704fe1305bd6`),
   on its own SWD pads.
+
+## 7. Related guide
+
+- **[Running Klipper `main` with a working eddy-current Z probe](main-with-eddy-current.md)** —
+  how to keep the host on `main` while the SV08 Max's eddy-current Z calibration still works
+  (no `run_non_contact_calibrate` error).
 
 *Documented after a real recovery, 2026-05-31.*
