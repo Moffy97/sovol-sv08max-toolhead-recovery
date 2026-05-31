@@ -1,92 +1,92 @@
-# Recupero MCU testa "bricckato" su Sovol SV08 Max — senza hardware esterno
+# Recovering a "bricked" toolhead MCU on the Sovol SV08 Max — with no external hardware
 
-Recupero di un MCU della **testa di stampa** (o della scheda buffer filamento) di una
-**Sovol SV08 Max** quando il suo firmware è corrotto e non comunica più via CAN,
-**usando l'SBC della stampante stessa come programmatore SWD** (niente ST-Link, niente Arduino).
+Recover a **print-head** MCU (or the filament-buffer board MCU) of a **Sovol SV08 Max**
+when its firmware is corrupted and it no longer communicates over CAN,
+**using the printer's own SBC as an SWD programmer** (no ST-Link, no Arduino).
 
-**Autore:** Matteo Di Cristoforo
-**Licenza:** MIT (vedi `LICENSE`)
+**Author:** Matteo Di Cristoforo
+**License:** MIT (see `LICENSE`)
 
-> ⚠️ Guida tecnica avanzata. Lavorare sul firmware degli MCU comporta il rischio di
-> danneggiare la scheda. Procedi a tuo rischio e solo se sai cosa stai facendo.
+> ⚠️ Advanced technical guide. Working on MCU firmware risks damaging the board.
+> Proceed at your own risk and only if you know what you are doing.
 
 ---
 
-## 1. Il contesto hardware
+## 1. Hardware context
 
-La SV08 Max ha tre microcontrollori + un piccolo computer Linux:
+The SV08 Max has three microcontrollers plus a small Linux computer:
 
-| Componente | Cosa | Note |
-|-----------|------|------|
-| **STM32H750** | MCU principale (motion) sulla scheda madre | fa anche da bridge USB↔CAN |
-| **H616 (BTT CB1)** | SBC Linux (Klipper/Moonraker) | sulla scheda madre, header seriale "5V RX TX GND" accessibile |
-| **STM32F103C8** | MCU della **testa** (hotend, estrusore, sonda eddy) | UUID CAN `61755fe321ac`, collegato via umbilical |
-| **STM32F103C8** | MCU della **scheda buffer filamento** | UUID CAN `704fe1305bd6` |
+| Component | What it is | Notes |
+|-----------|------------|-------|
+| **STM32H750** | Main (motion) MCU on the mainboard | also acts as the USB↔CAN bridge |
+| **H616 (BTT CB1)** | Linux SBC (Klipper/Moonraker) | on the mainboard; the "5V RX TX GND" serial header is accessible |
+| **STM32F103C8** | **Toolhead** MCU (hotend, extruder, eddy probe) | CAN UUID `61755fe321ac`, connected via the umbilical |
+| **STM32F103C8** | **Filament-buffer** board MCU | CAN UUID `704fe1305bd6` |
 
-I due STM32F103 hanno **Katapult** (bootloader CAN) + Klipper, e un header **SWD** a 4 pad
-etichettato `3V3 IO CK G` (IO=SWDIO/PA13, CK=SWCLK/PA14).
+The two STM32F103 chips run **Katapult** (a CAN bootloader) + Klipper, and expose a 4-pad
+**SWD** header labeled `3V3 IO CK G` (IO = SWDIO/PA13, CK = SWCLK/PA14).
 
-## 2. Il problema (come ci si "bricca")
+## 2. The problem (how it gets bricked)
 
-Compilando il firmware Klipper per questi MCU con l'**offset di flash sbagliato**
-(applicazione a `0x8000000` invece di `0x8002000`, dove Katapult occupa i primi 8 KiB),
-il flash via Katapult "riesce" ma i vettori di reset puntano nella regione di Katapult →
-all'avvio l'MCU salta a codice non valido e **si blocca**.
+If you compile the Klipper firmware for these MCUs with the **wrong flash offset**
+(application at `0x8000000` instead of `0x8002000`, where Katapult occupies the first 8 KiB),
+the Katapult flash "succeeds" but the reset vectors point into Katapult's region → on boot
+the MCU jumps to invalid code and **hangs**.
 
-Perché **non** si recupera via CAN:
-- Katapult gira solo ~1 secondo all'accensione, poi salta all'app (che "sembra valida") → niente finestra catturabile
-- Niente pulsante BOOT/reset accessibile; il double-reset via power cycle non funziona (la RAM si azzera)
-- L'MCU bloccato non dà ACK sul bus CAN → l'intero TX del bus va in stallo
+Why it **cannot** be recovered over CAN:
+- Katapult only runs for ~1 second at power-up, then jumps to the app (which "looks valid") → no catchable window
+- No accessible BOOT/reset button; the double-reset-via-power-cycle trick fails (RAM is cleared on power loss)
+- A hung MCU does not ACK on the CAN bus → the whole bus TX stalls
 
-**Conclusione:** serve lo **SWD**, che accede direttamente al chip ignorando l'app rotta.
+**Conclusion:** you need **SWD**, which accesses the chip directly and ignores the broken app.
 
-## 3. L'idea: l'SBC come programmatore SWD (a costo zero)
+## 3. The idea: the SBC as an SWD programmer (zero cost)
 
-L'header seriale di debug **"5V RX TX GND"** della scheda madre è la **console UART0** dell'H616
-sui GPIO **PH0 (TX, linea 224)** e **PH1 (RX, linea 225)**. Liberando quei pin dalla UART,
-**OpenOCD** può fare **SWD bit-bang** tramite il driver `linuxgpiod`, usando l'SBC stesso
-come sonda. Bastano 3 fili fino ai pad SWD della testa.
+The mainboard's **"5V RX TX GND"** serial debug header is the H616's **UART0 console**
+on GPIO **PH0 (TX, line 224)** and **PH1 (RX, line 225)**. By releasing those pins from the
+UART driver, **OpenOCD** can bit-bang **SWD** through its `linuxgpiod` driver, using the SBC
+itself as the probe. You only need 3 wires to the toolhead's SWD pads.
 
-### Cablaggio (3 fili)
-| Scheda madre "5V RX TX GND" | → | Testa "3V3 IO CK G" |
+### Wiring (3 wires)
+| Mainboard "5V RX TX GND" | → | Toolhead "3V3 IO CK G" |
 |:--:|:--:|:--:|
 | **TX** (PH0/224 = SWCLK) | → | **CK** |
 | **RX** (PH1/225 = SWDIO) | → | **IO** |
 | **GND** | → | **G** |
 
-- **3V3/5V non si collegano**: la testa è alimentata dai suoi 24V (stampante accesa). Massa comune (anche via umbilical).
-- Logica 3.3 V su entrambi i lati → compatibile.
+- **Do not connect 3V3/5V**: the toolhead is powered by its own 24 V (printer on). Common ground (also via the umbilical).
+- 3.3 V logic on both sides → compatible.
 
-## 4. I tre dettagli che fanno la differenza
+## 4. The three details that make it work
 
-1. **Sistema scarico**: il bit-bang dipende dal timing software. Con Klipper/Moonraker attivi
-   lo scheduling sfasa i bit e OpenOCD non aggancia. **Fermare tutti i servizi** prima.
-2. **Priorità realtime**: lanciare OpenOCD con `chrt -f 99` per ridurre il jitter.
-3. **L'offset è la regola d'oro**: o **Katapult a `0x8000000` + Klipper a `0x8002000`**,
-   oppure un **Klipper standalone compilato per `0x8000000`** scritto a `0x8000000`.
-   **Mai incrociare le due cose.** Prima di scrivere, lo script fa `stm32f1x unlock 0`
-   (gestisce l'eventuale protezione di lettura RDP con mass-erase).
+1. **Idle system**: bit-banging depends on software timing. With Klipper/Moonraker running,
+   scheduling jitter corrupts the bits and OpenOCD won't attach. **Stop all services** first.
+2. **Realtime priority**: launch OpenOCD with `chrt -f 99` to reduce jitter.
+3. **The offset is the golden rule**: either **Katapult at `0x8000000` + Klipper at `0x8002000`**,
+   or a **standalone Klipper compiled for `0x8000000`** written to `0x8000000`.
+   **Never mix the two.** Before writing, the script runs `stm32f1x unlock 0`
+   (handles read-out protection / RDP with a mass-erase if needed).
 
-## 5. Come si usa lo script
+## 5. Using the script
 
-Sull'SBC (via SSH):
+On the SBC (over SSH):
 ```bash
-# 1) compila Katapult e Klipper per l'F103 con offset 0x2000 (vedi commenti nello script)
-# 2) metti i 3 file/percorsi nello script e lancia:
-sudo bash recupero_testa_swd.sh
+# 1) build Katapult and Klipper for the F103 with the 0x2000 offset (see comments in the script)
+# 2) set the firmware paths in the script and run:
+sudo bash recover_toolhead_swd.sh
 ```
-Lo script: ferma i servizi → libera la UART → testa lo SWD (con ritentativi) → flasha
-Katapult+Klipper → ripristina la console UART. Dopo, riallinea il firmware host
-(es. `ldc1612.py`) alla versione del firmware MCU flashato e riavvia Klipper.
+The script: stops services → releases the UART → tests SWD (with retries) → flashes
+Katapult+Klipper → restores the UART console. Afterwards, align the host firmware
+(e.g. `ldc1612.py`) to the version of the MCU firmware you flashed, then restart Klipper.
 
-## 6. Note finali
+## 6. Final notes
 
-- Lato host: il firmware Klipper dell'MCU e i moduli Python dell'host devono **combaciare**
-  (es. il comando `ldc1612_setup_home` con/senza `homing_method` tra branch `main` ed
-  `eddy_contact`). Disallineamento → "Command format mismatch".
-- Una volta reinstallato **Katapult**, i flash futuri si fanno comodamente via CAN
-  (`flash_can.py`), senza più SWD.
-- Stessa identica procedura per la **scheda buffer filamento** (UUID `704fe1305bd6`),
-  sui pad SWD della sua scheda.
+- Host side: the MCU's Klipper firmware and the host's Python modules must **match**
+  (e.g. the `ldc1612_setup_home` command with/without `homing_method` between the `main`
+  and `eddy_contact` branches). A mismatch → "Command format mismatch".
+- Once **Katapult** is reinstalled, future flashes are done conveniently over CAN
+  (`flash_can.py`), no more SWD needed.
+- The exact same procedure works for the **filament-buffer board** (UUID `704fe1305bd6`),
+  on its own SWD pads.
 
-*Documentato dopo un recupero reale, 31/05/2026.*
+*Documented after a real recovery, 2026-05-31.*
