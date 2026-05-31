@@ -87,12 +87,14 @@ fi
 set -- $FOUND
 
 echo "### 4) Flashing: unlock + Katapult @0x08000000 + Klipper @0x08002000 ..."
+# NOTE: 'verify' is important — GPIO bit-bang SWD is marginal and can glitch a
+# write silently. 'program ... verify' re-reads the flash and fails loudly if wrong.
 chrt -f 99 $OPENOCD $(ocd_opts "$1" "$2") \
   -c "init" -c "reset halt" \
   -c "stm32f1x unlock 0" -c "reset halt" \
-  -c "flash write_image erase $KATAPULT_BIN 0x08000000" \
-  -c "flash write_image erase $KLIPPER_BIN  0x08002000" \
-  -c "reset run" -c "exit" 2>&1 | grep -iE "unlock|wrote|erased|Error|halted"
+  -c "program $KATAPULT_BIN 0x08000000 verify" \
+  -c "program $KLIPPER_BIN  0x08002000 verify reset" \
+  -c "exit" 2>&1 | grep -iE "unlock|wrote|verified|Verified|Error|halted"
 
 echo "### 5) Restoring the UART console..."
 echo "$UART_DEV" > "$UART_DRV/bind" 2>/dev/null
